@@ -11,28 +11,26 @@ import yt_dlp
 from flask import Flask
 import threading
 
-# --- লগিং সেটআপ ---
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# --- এনভায়রনমেন্ট ভ্যারিয়েবল এবং কনস্ট্যান্টস ---
 try:
     API_ID = int(os.environ.get("API_ID"))
     API_HASH = os.environ.get("API_HASH")
     BOT_TOKEN = os.environ.get("BOT_TOKEN")
-except (ValueError, TypeError):
-    logger.critical("API_ID, API_HASH, and BOT_TOKEN must be set correctly.")
+    LOG_CHANNEL = int(os.environ.get("LOG_CHANNEL"))
+except (ValueError, TypeError, KeyError):
+    logger.critical("API_ID, API_HASH, BOT_TOKEN, and LOG_CHANNEL must be set correctly.")
     exit(1)
 
 COOKIES_FILE_PATH = "/app/cookies.txt"
-MAX_FILE_SIZE = 1.95 * 1024 * 1024 * 1024  # 1.95 GB
+MAX_FILE_SIZE = 1.95 * 1024 * 1024 * 1024
+UPLOAD_WORKERS = 8
 
-# --- Telethon ক্লায়েন্ট ---
 client = TelegramClient('bot_session', API_ID, API_HASH)
 user_data = {}
 main_loop = None
 
-# --- Helper Functions ---
 def cleanup_files(*paths):
     for path in paths:
         if path and os.path.exists(path):
@@ -44,14 +42,12 @@ def humanbytes(size):
     power, n = 1024, 0
     power_labels = {0: 'B', 1: 'KiB', 2: 'MiB', 3: 'GiB', 4: 'TiB'}
     while size >= power and n < len(power_labels) - 1:
-        size /= power
-        n += 1
+        size /= power; n += 1
     return f"{size:.2f} {power_labels[n]}"
 
 def split_file(file_path, chunk_size):
     if os.path.getsize(file_path) <= chunk_size: return [file_path]
-    parts = []
-    base_name = os.path.splitext(file_path)[0]
+    parts, base_name = [], os.path.splitext(file_path)[0]
     with open(file_path, 'rb') as f:
         part_num = 0
         while True:
@@ -63,27 +59,11 @@ def split_file(file_path, chunk_size):
             parts.append(part_filename)
     return parts
 
-# --- Command Handlers ---
 @client.on(events.NewMessage(pattern='/start'))
 async def start_handler(event):
     user = await event.get_sender()
-    await event.respond(f"👋 হাই {user.first_name}!\n\nআমি একজন শক্তিশালী এবং Universal URL ডাউনলোডার বট। আমাকে যেকোনো লিঙ্ক দিন, আমি ফাইল ডাউনলোড করে দেবো।")
+    await event.respond(f"👋 হাই {user.first_name}!\n\nআমি একজন শক্তিশালী এবং Universal URL ডাউনলোডার বট।")
 
-@client.on(events.NewMessage(pattern='/help'))
-async def help_handler(event):
-    await event.respond("ব্যবহার করার জন্য শুধু একটি URL পাঠান। ইউটিউব, ফেসবুক, ইনস্টাগ্রাম, টুইটার বা যেকোনো সরাসরি ডাউনলোড লিঙ্ক কাজ করবে।")
-
-@client.on(events.NewMessage(pattern='/cancel'))
-async def cancel_handler(event):
-    user_id = event.sender_id
-    if user_id in user_data:
-        cleanup_files(user_data[user_id].get('thumbnail_path'))
-        del user_data[user_id]
-        await event.respond("✅ প্রক্রিয়া বাতিল করা হয়েছে।")
-    else:
-        await event.respond("কোনো প্রক্রিয়া চালু নেই।")
-
-# --- Core Conversation Logic ---
 @client.on(events.NewMessage(pattern=re.compile(r'https?://')))
 async def url_handler(event):
     user_id = event.sender_id
@@ -145,16 +125,15 @@ async def message_handler(event):
             return
         await process_and_upload(event, user_id)
 
-# --- The Engine Room: Download and Upload Function ---
 async def process_and_upload(event, user_id):
     user_info = user_data.get(user_id, {})
     url, file_format, thumbnail_path, custom_filename = [user_info.get(k) for k in ['url', 'format', 'thumbnail_path', 'custom_filename']]
     if not url or not file_format:
-        await event.respond("কিছু একটা সমস্যা হয়েছে, অনুগ্রহ করে আবার চেষ্টা করুন।")
-        return
+        await event.respond("কিছু একটা সমস্যা হয়েছে, অনুগ্রহ করে আবার চেষ্টা করুন।"); return
     progress_msg = await event.respond("প্রস্তুতি চলছে...")
+    start_time = time.time()
     last_update_time, downloaded_file_path = 0, None
-
+    
     def make_progress_bar(p): return "█" * round(p / 10) + "░" * (10 - round(p / 10))
     def download_progress_hook(d):
         nonlocal last_update_time, downloaded_file_path
@@ -164,12 +143,10 @@ async def process_and_upload(event, user_id):
                 p_str, speed, eta = [d.get('_percent_str', '0%').strip(), d.get('_speed_str', 'N/A').strip(), d.get('_eta_str', 'N/A').strip()]
                 try: p = float(p_str.strip('%'))
                 except ValueError: p = 0
-                downloaded_bytes, total_bytes = [d.get('downloaded_bytes', 0), d.get('total_bytes_estimate') or d.get('total_bytes', 0)]
+                downloaded, total = [d.get('downloaded_bytes', 0), d.get('total_bytes_estimate') or d.get('total_bytes', 0)]
                 text = (f"**📥 Downloading...**\n`[{make_progress_bar(p)}]`\n\n"
-                        f"**P:** `{p_str}`\n"
-                        f"**Size:** `{humanbytes(downloaded_bytes)} of {humanbytes(total_bytes)}`\n"
-                        f"**Speed:** `{speed}`\n"
-                        f"**ETA:** `{eta}`")
+                        f"**P:** `{p_str}`\n**Size:** `{humanbytes(downloaded)} of {humanbytes(total)}`\n"
+                        f"**Speed:** `{speed}`\n**ETA:** `{eta}`")
                 if main_loop: asyncio.run_coroutine_threadsafe(progress_msg.edit(text), main_loop)
                 last_update_time = current_time
         elif d['status'] == 'finished': downloaded_file_path = d.get('filename') or d.get('info_dict', {}).get('_filename')
@@ -179,20 +156,32 @@ async def process_and_upload(event, user_id):
         if current_time - last_update_time > 2:
             p = round((current / total) * 100)
             text = (f"**🚀 Uploading...**\n`[{make_progress_bar(p)}]`\n\n"
-                    f"**P:** `{p}%`\n"
-                    f"**Size:** `{humanbytes(current)} of {humanbytes(total)}`")
+                    f"**P:** `{p}%`\n**Size:** `{humanbytes(current)} of {humanbytes(total)}`")
             try: await progress_msg.edit(text)
             except MessageNotModifiedError: pass
             last_update_time = current_time
 
+    async def upload_and_log(file_to_upload, caption, filename, thumb=None):
+        is_video = file_to_upload.endswith(('.mp4', '.mkv', '.webm'))
+        attributes = [DocumentAttributeVideo(duration=0, w=0, h=0, supports_streaming=True)] if file_format == 'video' and is_video else []
+        await client.send_file(event.chat_id, file=file_to_upload, thumb=thumb, attributes=attributes,
+                               force_document=(file_format == 'document' or not is_video),
+                               caption=caption, file_name=filename, progress_callback=upload_progress_callback,
+                               workers=UPLOAD_WORKERS)
+        end_time = time.time()
+        time_taken = round(end_time - start_time)
+        user = await event.get_sender()
+        log_message = (f"✅ **সফলভাবে আপলোড সম্পন্ন!**\n\n👤 **ব্যবহারকারী:** [{user.first_name}](tg://user?id={user.id})\n"
+                       f"🆔 **ইউজার আইডি:** `{user.id}`\n📄 **ফাইলের নাম:** `{filename}`\n"
+                       f"📥 **ডাউনলোড লিঙ্ক:** `{url}`\n⏱️ **সময় লেগেছে:** `{time_taken} সেকেন্ড`")
+        if LOG_CHANNEL:
+            await client.send_message(LOG_CHANNEL, log_message, link_preview=False)
+
     output_template = f"downloads/{uuid.uuid4()}/%(title)s.%(ext)s"
-    ydl_opts = {
-        'outtmpl': output_template, 'noplaylist': True, 'nocheckcertificate': True,
-        'progress_hooks': [download_progress_hook], 'format': 'bestvideo+bestaudio/best',
-        'merge_output_format': 'mkv',
-        'extractor_args': {'youtube': {'player_client': 'android'}},
-        'cookiefile': COOKIES_FILE_PATH if os.path.exists(COOKIES_FILE_PATH) else None,
-    }
+    ydl_opts = {'outtmpl': output_template, 'noplaylist': True, 'nocheckcertificate': True,
+                'progress_hooks': [download_progress_hook], 'format': 'bestvideo+bestaudio/best',
+                'merge_output_format': 'mkv', 'extractor_args': {'youtube': {'player_client': 'android'}},
+                'cookiefile': COOKIES_FILE_PATH if os.path.exists(COOKIES_FILE_PATH) else None}
     
     downloaded_parts_to_clean = []
     try:
@@ -200,31 +189,22 @@ async def process_and_upload(event, user_id):
         if not downloaded_file_path or not os.path.exists(downloaded_file_path): raise ValueError("ফাইল ডাউনলোড করা যায়নি।")
         await progress_msg.edit("ডাউনলোড সম্পন্ন! এখন আপলোড করার জন্য প্রস্তুত হচ্ছে...")
         
-        file_size = os.path.getsize(downloaded_file_path)
-        file_ext = downloaded_file_path.split('.')[-1]
+        file_size, file_ext = [os.path.getsize(downloaded_file_path), downloaded_file_path.split('.')[-1]]
         final_caption = custom_filename or os.path.basename(downloaded_file_path).rsplit('.', 1)[0]
         
         if file_size > MAX_FILE_SIZE:
             await progress_msg.edit(f"ফাইলটি বড় হওয়ায় ({humanbytes(file_size)}), এটিকে {humanbytes(MAX_FILE_SIZE)} খণ্ডে বিভক্ত করা হচ্ছে...")
             split_parts = split_file(downloaded_file_path, int(MAX_FILE_SIZE))
             downloaded_parts_to_clean = split_parts
-            total_parts = len(split_parts)
             for i, part in enumerate(split_parts):
-                part_caption = f"**Part {i+1}/{total_parts}**\n\n{final_caption}"
+                part_caption = f"**Part {i+1}/{len(split_parts)}**\n\n{final_caption}"
                 final_filename = f"{final_caption} - Part {i+1}.{file_ext}"
-                await client.send_file(event.chat_id, file=part, caption=part_caption, force_document=True,
-                                       thumb=thumbnail_path if i == 0 else None, file_name=final_filename)
+                await upload_and_log(part, part_caption, final_filename, thumb=thumbnail_path if i == 0 else None)
                 await asyncio.sleep(2)
-            await progress_msg.delete()
         else:
             final_filename = f"{final_caption}.{file_ext}"
-            is_video = downloaded_file_path.endswith(('.mp4', '.mkv', '.webm'))
-            attributes = [DocumentAttributeVideo(duration=0, w=0, h=0, supports_streaming=True)] if file_format == 'video' and is_video else []
-            await client.send_file(event.chat_id, file=downloaded_file_path, thumb=thumbnail_path,
-                                   attributes=attributes, force_document=(file_format == 'document' or not is_video),
-                                   caption=final_caption, file_name=final_filename, progress_callback=upload_progress_callback)
-            await progress_msg.delete()
-            
+            await upload_and_log(downloaded_file_path, final_caption, final_filename, thumb=thumbnail_path)
+        await progress_msg.delete()
     except Exception as e:
         if isinstance(e, MessageNotModifiedError): logger.warning(f"Message not modified for user {user_id}. Ignoring.")
         else:
@@ -235,7 +215,6 @@ async def process_and_upload(event, user_id):
         cleanup_files(downloaded_file_path, *downloaded_parts_to_clean)
         if user_id in user_data: del user_data[user_id]
 
-# --- Flask Web Server & Main Execution ---
 app = Flask(__name__)
 @app.route('/')
 def health_check(): return "Bot is running healthily!", 200
