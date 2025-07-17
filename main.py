@@ -11,11 +11,9 @@ import yt_dlp
 from flask import Flask
 import threading
 
-# --- লগিং সেটআপ ---
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# --- এনভায়রনমেন্ট ভ্যারিয়েবল ---
 try:
     API_ID = int(os.environ.get("API_ID"))
     API_HASH = os.environ.get("API_HASH")
@@ -24,16 +22,11 @@ except (ValueError, TypeError):
     logger.critical("API_ID, API_HASH, and BOT_TOKEN must be set correctly.")
     exit(1)
 
-# Render-এ Secret File হিসেবে কুকি ফাইল যোগ করলে এর পাথ /etc/secrets/cookies.txt হয়
-# অন্যথায়, আমরা YOUTUBE_COOKIES ভ্যারিয়েবল থেকে একটি লোকাল ফাইল তৈরি করব
-COOKIES_FILE_PATH = "/etc/secrets/cookies.txt" if os.path.exists("/etc/secrets/cookies.txt") else "cookies.txt"
-
-# --- Telethon ক্লায়েন্ট ---
+COOKIES_FILE_PATH = "/app/cookies.txt"
 client = TelegramClient('bot_session', API_ID, API_HASH)
 user_data = {}
 main_loop = None
 
-# --- Helper Functions ---
 def cleanup_files(*paths):
     for path in paths:
         if path and os.path.exists(path):
@@ -42,7 +35,6 @@ def cleanup_files(*paths):
             except OSError as e:
                 logger.error(f"Error deleting file {path}: {e}")
 
-# --- Command Handlers ---
 @client.on(events.NewMessage(pattern='/start'))
 async def start_handler(event):
     user = await event.get_sender()
@@ -50,7 +42,7 @@ async def start_handler(event):
 
 @client.on(events.NewMessage(pattern='/help'))
 async def help_handler(event):
-    await event.respond("ব্যবহার করার জন্য শুধু একটি URL পাঠান। ইউটিউব, ফেসবুক, ইনস্টাগ্রাম, টুইটার বা যেকোনো সরাসরি ডাউনলোড লিঙ্ক কাজ করবে।")
+    await event.respond("ব্যবহার করার জন্য শুধু একটি URL পাঠান। ইউটিউব, ফেসবুক, ইনস্টাগ্রাম বা যেকোনো সরাসরি ডাউনলোড লিঙ্ক কাজ করবে।")
 
 @client.on(events.NewMessage(pattern='/cancel'))
 async def cancel_handler(event):
@@ -62,7 +54,6 @@ async def cancel_handler(event):
     else:
         await event.respond("কোনো প্রক্রিয়া চালু নেই।")
 
-# --- Core Logic Handlers ---
 @client.on(events.NewMessage(pattern=re.compile(r'https?://')))
 async def url_handler(event):
     user_id = event.sender_id
@@ -72,7 +63,7 @@ async def url_handler(event):
     url = event.text
     user_data[user_id] = {'url': url, 'state': 'waiting_for_format'}
     buttons = [[Button.inline("🎬 ভিডিও", data="video"), Button.inline("📄 ফাইল", data="document")]]
-    await event.respond("আপনি এই লিঙ্কটি কোন ফরম্যাটে চান? (সরাসরি ডাউনলোড লিঙ্কের জন্য 'ফাইল' বেছে নিন)", buttons=buttons)
+    await event.respond("আপনি এই লিঙ্কটি কোন ফরম্যাটে চান?", buttons=buttons)
 
 @client.on(events.CallbackQuery)
 async def callback_handler(event):
@@ -80,8 +71,7 @@ async def callback_handler(event):
     if user_id not in user_data or user_data[user_id]['state'] != 'waiting_for_format':
         try:
             await event.answer("এই বাটনটি আপনার জন্য নয় অথবা এর মেয়াদ শেষ।", alert=True)
-        except MessageNotModifiedError:
-            pass
+        except MessageNotModifiedError: pass
         return
     choice = event.data.decode('utf-8')
     user_data[user_id]['format'] = choice
@@ -90,13 +80,11 @@ async def callback_handler(event):
         await event.edit("চমৎকার! এখন ফাইলের একটি নাম দিন।\n\nডিফল্ট নাম ব্যবহার করতে চাইলে `/skip` টাইপ করুন।")
     except MessageNotModifiedError:
         logger.warning("Message not modified, likely due to double-click. Ignoring.")
-        pass
 
 @client.on(events.NewMessage)
 async def message_handler(event):
     user_id = event.sender_id
-    if user_id not in user_data or 'state' not in user_data[user_id]:
-        return
+    if user_id not in user_data or 'state' not in user_data[user_id]: return
     state = user_data[user_id]['state']
     if state == 'waiting_for_filename':
         if event.text.strip().lower() == '/skip':
@@ -124,11 +112,10 @@ async def message_handler(event):
             await event.respond("👍 ঠিক আছে, ডিফল্ট থাম্বনেইল ব্যবহার করা হবে। ডাউনলোড শুরু হচ্ছে...")
         else:
             await event.respond("অনুগ্রহ করে একটি ছবি পাঠান অথবা `/skip` টাইপ করুন।")
-            user_data[user_id]['state'] = 'waiting_for_thumbnail' # state reset
+            user_data[user_id]['state'] = 'waiting_for_thumbnail'
             return
         await process_and_upload(event, user_id)
 
-# --- Download and Upload Function ---
 async def process_and_upload(event, user_id):
     user_info = user_data.get(user_id, {})
     url, file_format, thumbnail_path, custom_filename = [user_info.get(k) for k in ['url', 'format', 'thumbnail_path', 'custom_filename']]
@@ -138,10 +125,7 @@ async def process_and_upload(event, user_id):
     progress_msg = await event.respond("প্রস্তুতি চলছে...")
     last_update_time, downloaded_file_path = 0, None
 
-    def make_progress_bar(percentage):
-        filled = round(percentage / 10)
-        return "█" * filled + "░" * (10 - filled)
-
+    def make_progress_bar(p): return "█" * round(p / 10) + "░" * (10 - round(p / 10))
     def download_progress_hook(d):
         nonlocal last_update_time, downloaded_file_path
         if d['status'] == 'downloading':
@@ -150,41 +134,30 @@ async def process_and_upload(event, user_id):
                 p_str, p, speed, total, total_str, bar = [d.get('_percent_str', '0%').strip(), 0, d.get('_speed_str', 'N/A').strip(), d.get('total_bytes_estimate') or d.get('total_bytes', 0), "Unknown", ""]
                 if '%' in p_str: p = float(p_str.strip('%'))
                 if total > 0: total_str = f"{total / 1048576:.2f} MB"
-                bar = make_progress_bar(p)
-                text = f"📥 **ডাউনলোড হচ্ছে...**\n`[{bar}] {p_str}`\n**গতি:** `{speed}` | **আকার:** `{total_str}`"
+                text = f"📥 **ডাউনলোড হচ্ছে...**\n`[{make_progress_bar(p)}] {p_str}`\n**গতি:** `{speed}` | **আকার:** `{total_str}`"
                 if main_loop: asyncio.run_coroutine_threadsafe(progress_msg.edit(text), main_loop)
                 last_update_time = current_time
-        elif d['status'] == 'finished':
-            downloaded_file_path = d.get('filename') or d.get('info_dict', {}).get('_filename')
-
+        elif d['status'] == 'finished': downloaded_file_path = d.get('filename') or d.get('info_dict', {}).get('_filename')
     async def upload_progress_callback(current, total):
         nonlocal last_update_time
         current_time = time.time()
         if current_time - last_update_time > 2:
-            p, bar = round((current / total) * 100), ""
-            bar = make_progress_bar(p)
-            text = f"🚀 **আপলোড হচ্ছে...**\n`[{bar}] {p}%`"
+            p = round((current / total) * 100)
+            text = f"🚀 **আপলোড হচ্ছে...**\n`[{make_progress_bar(p)}] {p}%`"
             await progress_msg.edit(text)
             last_update_time = current_time
 
     output_template = f"downloads/{uuid.uuid4()}/%(title)s.%(ext)s"
     ydl_opts = {
         'outtmpl': output_template, 'noplaylist': True, 'nocheckcertificate': True,
-        'progress_hooks': [download_progress_hook],
-        'format': 'bestvideo[ext=mp4][vcodec^=avc]+bestaudio[ext=m4a]/best[ext=mp4]/best',
-        'extractor_args': {'youtube': {'player_client': 'android', 'skip': 'configs,player_responses'}},
+        'progress_hooks': [download_progress_hook], 'format': 'bestvideo+bestaudio/best',
+        'merge_output_format': 'mkv',
+        'extractor_args': {'youtube': {'player_client': 'android'}},
         'cookiefile': COOKIES_FILE_PATH if os.path.exists(COOKIES_FILE_PATH) else None,
     }
-    if file_format == 'video':
-        ydl_opts['postprocessors'] = [{'key': 'FFmpegVideoConvertor', 'preferedformat': 'mp4'}]
-
     try:
         if main_loop: await main_loop.run_in_executor(None, lambda: yt_dlp.YoutubeDL(ydl_opts).extract_info(url, download=True))
-        if not downloaded_file_path or not os.path.exists(downloaded_file_path):
-            ydl_opts['format'] = 'bestvideo+bestaudio/best'
-            if main_loop: await main_loop.run_in_executor(None, lambda: yt_dlp.YoutubeDL(ydl_opts).extract_info(url, download=True))
         if not downloaded_file_path or not os.path.exists(downloaded_file_path): raise ValueError("ফাইল ডাউনলোড করা যায়নি।")
-
         await progress_msg.edit("ডাউনলোড সম্পন্ন! এখন আপলোড করা হচ্ছে...")
         last_update_time = 0
         file_ext = downloaded_file_path.split('.')[-1]
@@ -200,31 +173,19 @@ async def process_and_upload(event, user_id):
         logger.error(f"Error for user {user_id}: {e}")
         try:
             await progress_msg.edit(f"❌ একটি মারাত্মক সমস্যা হয়েছে।\n**ত্রুটি:** `{str(e)[:500]}`")
-        except Exception as edit_error:
-            logger.error(f"Could not edit message: {edit_error}")
+        except Exception as edit_error: logger.error(f"Could not edit message: {edit_error}")
     finally:
         cleanup_files(downloaded_file_path, thumbnail_path)
         if user_id in user_data: del user_data[user_id]
 
-# --- Flask Web Server & Main Execution ---
 app = Flask(__name__)
 @app.route('/')
 def health_check(): return "Bot is running healthily!", 200
 def run_flask(): app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
-
-def create_cookie_file_from_env():
-    if not os.path.exists(COOKIES_FILE_PATH):
-        cookie_data = os.environ.get("YOUTUBE_COOKIES")
-        if cookie_data:
-            logger.info("YOUTUBE_COOKIES env var found. Creating cookies.txt.")
-            with open(COOKIES_FILE_PATH, "w") as f:
-                f.write(cookie_data)
-
 async def main_async_runner():
     global main_loop
     main_loop = asyncio.get_running_loop()
     os.makedirs("downloads", exist_ok=True)
-    create_cookie_file_from_env()
     threading.Thread(target=run_flask, daemon=True).start()
     await client.start(bot_token=BOT_TOKEN)
     logger.info("Bot has started!")
