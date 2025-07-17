@@ -5,6 +5,7 @@ import re
 import uuid
 import time
 from telethon import TelegramClient, events, Button
+from telethon.tl.types import DocumentAttributeVideo
 import yt_dlp
 from flask import Flask
 import threading
@@ -30,7 +31,6 @@ user_data = {}
 
 # --- Helper Functions ---
 def cleanup_files(*paths):
-    """Temporary ফাইল ডিলিট করার জন্য"""
     for path in paths:
         if path and os.path.exists(path):
             try:
@@ -63,7 +63,6 @@ async def help_handler(event):
 async def cancel_handler(event):
     user_id = event.sender_id
     if user_id in user_data:
-        # ডাউনলোড করা ফাইল মুছে ফেলা
         cleanup_files(user_data[user_id].get('thumbnail_path'))
         del user_data[user_id]
         await event.respond("✅ প্রক্রিয়াটি সফলভাবে বাতিল করা হয়েছে।")
@@ -122,7 +121,7 @@ async def message_handler(event):
         else:
             await event.respond("অনুগ্রহ করে একটি ছবি পাঠান অথবা `/skip` টাইপ করুন।")
 
-# --- Download and Upload Function ---
+# --- Download and Upload Function with Progress Bar ---
 async def process_and_upload(event, user_id):
     user_info = user_data.get(user_id, {})
     url = user_info.get('url')
@@ -133,38 +132,85 @@ async def process_and_upload(event, user_id):
         await event.respond("কিছু একটা সমস্যা হয়েছে, অনুগ্রহ করে আবার চেষ্টা করুন।")
         return
 
-    progress_msg = await event.respond("ডাউনলোড শুরু হচ্ছে... ⏳")
-    start_time = time.time()
+    progress_msg = await event.respond("প্রস্তুতি চলছে...")
+    last_update_time = 0
     downloaded_file_path = None
 
-    def progress_hook(d):
+    def make_progress_bar(percentage):
+        filled_blocks = round(percentage / 10)
+        empty_blocks = 10 - filled_blocks
+        return "█" * filled_blocks + "░" * empty_blocks
+
+    def download_progress_hook(d):
+        nonlocal last_update_time, progress_msg
         if d['status'] == 'downloading':
-            pass
+            current_time = time.time()
+            if current_time - last_update_time > 2:
+                percentage_str = d.get('_percent_str', '0%')
+                try:
+                    percentage = float(percentage_str.strip('%'))
+                except ValueError:
+                    percentage = 0
+                
+                speed = d.get('_speed_str', 'N/A')
+                total_size = d.get('total_bytes_estimate') or d.get('total_bytes', 0)
+                total_size_str = f"{total_size / 1048576:.2f} MB" if total_size > 0 else "Unknown"
+
+                progress_bar = make_progress_bar(percentage)
+                
+                text = (
+                    f"📥 **ডাউনলোড হচ্ছে...**\n"
+                    f"`[{progress_bar}] {percentage_str}`\n"
+                    f"**গতি:** `{speed}` | **ফাইলের আকার:** `{total_size_str}`"
+                )
+                
+                asyncio.create_task(progress_msg.edit(text))
+                last_update_time = current_time
+
         elif d['status'] == 'finished':
             nonlocal downloaded_file_path
             downloaded_file_path = d.get('filename') or d.get('info_dict', {}).get('_filename')
 
+    async def upload_progress_callback(current, total):
+        nonlocal last_update_time, progress_msg
+        current_time = time.time()
+        if current_time - last_update_time > 2:
+            percentage = round((current / total) * 100)
+            progress_bar = make_progress_bar(percentage)
+            
+            text = (
+                f"🚀 **আপলোড হচ্ছে...**\n"
+                f"`[{progress_bar}] {percentage}%`"
+            )
+            await progress_msg.edit(text)
+            last_update_time = current_time
+
     output_template = f"downloads/{uuid.uuid4()}/%(title)s.%(ext)s"
     ydl_opts = {
         'outtmpl': output_template,
+        'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best',
+        'merge_output_format': 'mp4',
         'noplaylist': True,
-        'progress_hooks': [progress_hook],
+        'nocheckcertificate': True,
+        'progress_hooks': [download_progress_hook],
+        'postprocessor_args': [
+            '-c:v', 'libx264', '-c:a', 'aac', '-map', '0:v:0?', '-map', '0:a:0?'
+        ] if file_format == 'video' else [],
         'postprocessors': [{'key': 'FFmpegVideoConvertor', 'preferedformat': 'mp4'}] if file_format == 'video' else [],
-        'nocheckcertificate': True
     }
 
     try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.extract_info(url, download=True)
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, lambda: yt_dlp.YoutubeDL(ydl_opts).extract_info(url, download=True))
         
         if not downloaded_file_path or not os.path.exists(downloaded_file_path):
             raise ValueError("ফাইল ডাউনলোড করা যায়নি। লিঙ্কটি সম্ভবত ব্যক্তিগত (private) অথবা সুরক্ষিত।")
             
-        await progress_msg.edit("ডাউনলোড সম্পন্ন! এখন আপলোড করা হচ্ছে... 🚀")
+        await progress_msg.edit("ডাউনলোড সম্পন্ন! এখন আপলোড করা হচ্ছে...")
+        last_update_time = 0
 
         file_attributes = []
         if file_format == 'video':
-            from telethon.tl.types import DocumentAttributeVideo
             file_attributes.append(DocumentAttributeVideo(duration=0, w=0, h=0, supports_streaming=True))
         
         await client.send_file(
@@ -173,7 +219,8 @@ async def process_and_upload(event, user_id):
             thumb=thumbnail_path,
             attributes=file_attributes,
             force_document=(file_format == 'document'),
-            caption=os.path.basename(downloaded_file_path).rsplit('.', 1)[0]
+            caption=os.path.basename(downloaded_file_path).rsplit('.', 1)[0],
+            progress_callback=upload_progress_callback
         )
         await progress_msg.delete()
 
@@ -185,7 +232,7 @@ async def process_and_upload(event, user_id):
         if user_id in user_data:
             del user_data[user_id]
 
-# --- Flask Web Server Part ---
+# --- Flask Web Server & Main Execution ---
 app = Flask(__name__)
 
 @app.route('/')
@@ -196,7 +243,6 @@ def run_flask():
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
 
-# --- Main Execution ---
 async def main():
     os.makedirs("downloads", exist_ok=True)
     
