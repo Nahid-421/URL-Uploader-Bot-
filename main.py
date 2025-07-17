@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 try:
     API_ID = int(os.environ.get("API_ID"))
-    API_HASH = os.environ.get("API_HASH")
+    API_HASH = os.environ.get("API_HASH"))
     BOT_TOKEN = os.environ.get("BOT_TOKEN")
 except (ValueError, TypeError):
     logger.critical("API_ID, API_HASH, and BOT_TOKEN must be set correctly.")
@@ -34,6 +34,16 @@ def cleanup_files(*paths):
                 os.remove(path)
             except OSError as e:
                 logger.error(f"Error deleting file {path}: {e}")
+
+def humanbytes(size):
+    if not size: return "0B"
+    power = 1024
+    n = 0
+    power_labels = {0: 'B', 1: 'KiB', 2: 'MiB', 3: 'GiB', 4: 'TiB'}
+    while size >= power:
+        size /= power
+        n += 1
+    return f"{size:.2f} {power_labels[n]}"
 
 @client.on(events.NewMessage(pattern='/start'))
 async def start_handler(event):
@@ -126,25 +136,38 @@ async def process_and_upload(event, user_id):
     last_update_time, downloaded_file_path = 0, None
 
     def make_progress_bar(p): return "█" * round(p / 10) + "░" * (10 - round(p / 10))
+    
     def download_progress_hook(d):
         nonlocal last_update_time, downloaded_file_path
         if d['status'] == 'downloading':
             current_time = time.time()
             if current_time - last_update_time > 2:
-                p_str, p, speed, total, total_str, bar = [d.get('_percent_str', '0%').strip(), 0, d.get('_speed_str', 'N/A').strip(), d.get('total_bytes_estimate') or d.get('total_bytes', 0), "Unknown", ""]
-                if '%' in p_str: p = float(p_str.strip('%'))
-                if total > 0: total_str = f"{total / 1048576:.2f} MB"
-                text = f"📥 **ডাউনলোড হচ্ছে...**\n`[{make_progress_bar(p)}] {p_str}`\n**গতি:** `{speed}` | **আকার:** `{total_str}`"
+                percentage_str = d.get('_percent_str', '0%').strip()
+                try: percentage = float(percentage_str.strip('%'))
+                except ValueError: percentage = 0
+                speed_str = d.get('_speed_str', 'N/A').strip()
+                eta_str = d.get('_eta_str', 'N/A').strip()
+                downloaded_bytes = d.get('downloaded_bytes', 0)
+                total_bytes = d.get('total_bytes_estimate') or d.get('total_bytes', 0)
+                text = (f"**📥 Downloading...**\n`[{make_progress_bar(percentage)}]`\n\n"
+                        f"**P:** `{percentage_str}`\n"
+                        f"**Size:** `{humanbytes(downloaded_bytes)} of {humanbytes(total_bytes)}`\n"
+                        f"**Speed:** `{speed_str}`\n"
+                        f"**ETA:** `{eta_str}`")
                 if main_loop: asyncio.run_coroutine_threadsafe(progress_msg.edit(text), main_loop)
                 last_update_time = current_time
         elif d['status'] == 'finished': downloaded_file_path = d.get('filename') or d.get('info_dict', {}).get('_filename')
+
     async def upload_progress_callback(current, total):
         nonlocal last_update_time
         current_time = time.time()
         if current_time - last_update_time > 2:
-            p = round((current / total) * 100)
-            text = f"🚀 **আপলোড হচ্ছে...**\n`[{make_progress_bar(p)}] {p}%`"
-            await progress_msg.edit(text)
+            percentage = round((current / total) * 100)
+            text = (f"**🚀 Uploading...**\n`[{make_progress_bar(percentage)}]`\n\n"
+                    f"**P:** `{percentage}%`\n"
+                    f"**Size:** `{humanbytes(current)} of {humanbytes(total)}`")
+            try: await progress_msg.edit(text)
+            except MessageNotModifiedError: pass
             last_update_time = current_time
 
     output_template = f"downloads/{uuid.uuid4()}/%(title)s.%(ext)s"
@@ -170,11 +193,9 @@ async def process_and_upload(event, user_id):
                                caption=final_caption, file_name=final_filename, progress_callback=upload_progress_callback)
         await progress_msg.delete()
     except Exception as e:
-        # MessageNotModifiedError কে আলাদাভাবে হ্যান্ডেল করা হচ্ছে
         if isinstance(e, MessageNotModifiedError):
             logger.warning(f"Message not modified for user {user_id}. Ignoring. Details: {e}")
         else:
-            # অন্যান্য সব এররের জন্য লগ এবং ব্যবহারকারীকে বার্তা পাঠানো
             logger.error(f"Error for user {user_id}: {e}")
             try:
                 await progress_msg.edit(f"❌ একটি মারাত্মক সমস্যা হয়েছে।\n**ত্রুটি:** `{str(e)[:500]}`")
