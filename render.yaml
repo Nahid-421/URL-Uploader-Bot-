@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: telethon-url-downloader
+    env: python
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "python main.py"
+    healthCheckPath: /
+    disk:
+      name: downloads-storage
+      mountPath: /app/downloads
+      sizeGB: 10 # প্রয়োজন অনুযায়ী সাইজ বাড়াতে বা কমাতে পারেন
+    envVars:
+      - key: API_ID
+        sync: false
+      - key: API_HASH
+        sync: false
+      - key: BOT_TOKEN
+        sync: false
