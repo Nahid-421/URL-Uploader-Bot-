@@ -11,9 +11,11 @@ import yt_dlp
 from flask import Flask
 import threading
 
+# --- লগিং সেটআপ ---
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# --- এনভায়রনমেন্ট ভ্যারিয়েবল এবং কনস্ট্যান্টস ---
 try:
     API_ID = int(os.environ.get("API_ID"))
     API_HASH = os.environ.get("API_HASH")
@@ -24,13 +26,15 @@ except (ValueError, TypeError, KeyError):
     exit(1)
 
 COOKIES_FILE_PATH = "/app/cookies.txt"
-MAX_FILE_SIZE = 1.95 * 1024 * 1024 * 1024
-UPLOAD_WORKERS = 8
+MAX_FILE_SIZE = 1.95 * 1024 * 1024 * 1024  # 1.95 GB
+UPLOAD_WORKERS = 8 # শক্তিশালী সার্ভারের জন্য আপলোড থ্রেডের সংখ্যা
 
+# --- Telethon ক্লায়েন্ট ---
 client = TelegramClient('bot_session', API_ID, API_HASH)
 user_data = {}
 main_loop = None
 
+# --- Helper Functions ---
 def cleanup_files(*paths):
     for path in paths:
         if path and os.path.exists(path):
@@ -59,11 +63,27 @@ def split_file(file_path, chunk_size):
             parts.append(part_filename)
     return parts
 
+# --- Command Handlers ---
 @client.on(events.NewMessage(pattern='/start'))
 async def start_handler(event):
     user = await event.get_sender()
-    await event.respond(f"👋 হাই {user.first_name}!\n\nআমি একজন শক্তিশালী এবং Universal URL ডাউনলোডার বট।")
+    await event.respond(f"👋 হাই {user.first_name}!\n\nআমি একজন শক্তিশালী এবং Universal URL ডাউনলোডার বট। আমাকে যেকোনো লিঙ্ক দিন, আমি ফাইল ডাউনলোড করে দেবো।")
 
+@client.on(events.NewMessage(pattern='/help'))
+async def help_handler(event):
+    await event.respond("ব্যবহার করার জন্য শুধু একটি URL পাঠান। ইউটিউব, ফেসবুক, ইনস্টাগ্রাম, টুইটার বা যেকোনো সরাসরি ডাউনলোড লিঙ্ক কাজ করবে।")
+
+@client.on(events.NewMessage(pattern='/cancel'))
+async def cancel_handler(event):
+    user_id = event.sender_id
+    if user_id in user_data:
+        cleanup_files(user_data[user_id].get('thumbnail_path'))
+        del user_data[user_id]
+        await event.respond("✅ প্রক্রিয়া বাতিল করা হয়েছে।")
+    else:
+        await event.respond("কোনো প্রক্রিয়া চালু নেই।")
+
+# --- Core Conversation Logic ---
 @client.on(events.NewMessage(pattern=re.compile(r'https?://')))
 async def url_handler(event):
     user_id = event.sender_id
@@ -125,6 +145,7 @@ async def message_handler(event):
             return
         await process_and_upload(event, user_id)
 
+# --- The Engine Room: Download and Upload Function ---
 async def process_and_upload(event, user_id):
     user_info = user_data.get(user_id, {})
     url, file_format, thumbnail_path, custom_filename = [user_info.get(k) for k in ['url', 'format', 'thumbnail_path', 'custom_filename']]
@@ -133,7 +154,7 @@ async def process_and_upload(event, user_id):
     progress_msg = await event.respond("প্রস্তুতি চলছে...")
     start_time = time.time()
     last_update_time, downloaded_file_path = 0, None
-    
+
     def make_progress_bar(p): return "█" * round(p / 10) + "░" * (10 - round(p / 10))
     def download_progress_hook(d):
         nonlocal last_update_time, downloaded_file_path
@@ -175,7 +196,8 @@ async def process_and_upload(event, user_id):
                        f"🆔 **ইউজার আইডি:** `{user.id}`\n📄 **ফাইলের নাম:** `{filename}`\n"
                        f"📥 **ডাউনলোড লিঙ্ক:** `{url}`\n⏱️ **সময় লেগেছে:** `{time_taken} সেকেন্ড`")
         if LOG_CHANNEL:
-            await client.send_message(LOG_CHANNEL, log_message, link_preview=False)
+            try: await client.send_message(LOG_CHANNEL, log_message, link_preview=False)
+            except Exception as log_e: logger.error(f"Failed to send log message: {log_e}")
 
     output_template = f"downloads/{uuid.uuid4()}/%(title)s.%(ext)s"
     ydl_opts = {'outtmpl': output_template, 'noplaylist': True, 'nocheckcertificate': True,
@@ -229,7 +251,7 @@ async def main_async_runner():
     await client.run_until_disconnected()
 
 if __name__ == '__main__':
-    if all([API_ID, API_HASH, BOT_TOKEN]):
+    if all([API_ID, API_HASH, BOT_TOKEN, LOG_CHANNEL]):
         asyncio.run(main_async_runner())
     else:
         logger.critical("Crucial environment variables are missing.")
