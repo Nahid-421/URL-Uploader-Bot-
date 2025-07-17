@@ -86,7 +86,7 @@ async def callback_handler(event):
     
     try:
         user_data[user_id]['state'] = 'waiting_for_filename'
-        await event.edit("চমৎকার! अब ফাইলের একটি নাম দিন।\n\nডিফল্ট নাম ব্যবহার করতে চাইলে `/skip` টাইপ করুন।")
+        await event.edit("চমৎকার! এখন ফাইলের একটি নাম দিন।\n\nডিফল্ট নাম ব্যবহার করতে চাইলে `/skip` টাইপ করুন।")
     except MessageNotModifiedError:
         logger.warning("Message not modified, likely due to double-click. Ignoring.")
         pass
@@ -154,7 +154,7 @@ async def process_and_upload(event, user_id):
             current_time = time.time()
             if current_time - last_update_time > 2:
                 p_str = d.get('_percent_str', '0%').strip()
-                p = float(p_str.strip('%')) if p_str else 0
+                p = float(p_str.strip('%')) if '%' in p_str else 0
                 speed = d.get('_speed_str', 'N/A').strip()
                 total = d.get('total_bytes_estimate') or d.get('total_bytes', 0)
                 total_str = f"{total / 1048576:.2f} MB" if total > 0 else "Unknown"
@@ -177,9 +177,19 @@ async def process_and_upload(event, user_id):
             last_update_time = current_time
 
     output_template = f"downloads/{uuid.uuid4()}/%(title)s.%(ext)s"
-    ydl_opts = {'outtmpl': output_template, 'noplaylist': True, 'nocheckcertificate': True,
-                'progress_hooks': [download_progress_hook],
-                'format': 'bestvideo[ext=mp4][vcodec^=avc]+bestaudio[ext=m4a]/best[ext=mp4]/best'}
+    ydl_opts = {
+        'outtmpl': output_template,
+        'noplaylist': True,
+        'nocheckcertificate': True,
+        'progress_hooks': [download_progress_hook],
+        'format': 'bestvideo[ext=mp4][vcodec^=avc]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+        'extractor_args': {
+            'youtube': {
+                'player_client': 'android',
+                'skip': 'configs,player_responses'
+            }
+        }
+    }
     if file_format == 'video':
         ydl_opts['postprocessors'] = [{'key': 'FFmpegVideoConvertor', 'preferedformat': 'mp4'}]
 
