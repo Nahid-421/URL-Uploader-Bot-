@@ -1,16 +1,17 @@
 services:
   - type: web
-    name: telethon-url-downloader
-    env: python
-    buildpacks:
-      - https://github.com/jonathanong/heroku-buildpack-ffmpeg-latest
-    buildCommand: "pip install -r requirements.txt"
-    startCommand: "python main.py"
+    name: powerful-url-downloader # একটি শক্তিশালী নাম :)
+    env: docker
     healthCheckPath: /
+    
+    # বড় ফাইল এবং স্প্লিটিংয়ের জন্য ডিস্ক স্পেস প্রয়োজন
+    # সেরা পারফরম্যান্সের জন্য পেইড প্ল্যান সুপারিশ করা হচ্ছে
     disk:
       name: downloads-storage
       mountPath: /app/downloads
-      sizeGB: 10
+      sizeGB: 10 # প্রয়োজন অনুযায়ী বাড়াতে পারেন
+    
+    # এনভায়রনমেন্ট ভ্যারিয়েবল
     envVars:
       - key: API_ID
         sync: false
@@ -18,3 +19,8 @@ services:
         sync: false
       - key: BOT_TOKEN
         sync: false
+    
+    # কুকি ফাইলের জন্য (সবচেয়ে নিরাপদ পদ্ধতি)
+    secretFiles:
+      - key: YOUTUBE_COOKIES_FILE 
+        mountPath: /app/cookies.txt
