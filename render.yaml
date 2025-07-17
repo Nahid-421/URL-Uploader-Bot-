@@ -2,13 +2,17 @@ services:
   - type: web
     name: telethon-url-downloader
     env: python
+    # Buildpack যোগ করা হয়েছে
+    buildpacks:
+      - https://github.com/jonathanong/heroku-buildpack-ffmpeg-latest
+    # buildCommand থেকে ffmpeg ইনস্টলেশন সরানো হয়েছে
     buildCommand: "pip install -r requirements.txt"
     startCommand: "python main.py"
     healthCheckPath: /
     disk:
       name: downloads-storage
       mountPath: /app/downloads
-      sizeGB: 10 # প্রয়োজন অনুযায়ী সাইজ বাড়াতে বা কমাতে পারেন
+      sizeGB: 10
     envVars:
       - key: API_ID
         sync: false
