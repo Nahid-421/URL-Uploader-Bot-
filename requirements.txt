@@ -2,4 +2,3 @@ Telethon
 yt-dlp
 ffmpeg-python
 Flask
-jinja2
