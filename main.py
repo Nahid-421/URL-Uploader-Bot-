@@ -6,6 +6,7 @@ import uuid
 import time
 from telethon import TelegramClient, events, Button
 from telethon.tl.types import DocumentAttributeVideo
+from telethon.errors.rpcerrorlist import MessageNotModifiedError
 import yt_dlp
 from flask import Flask
 import threading
@@ -26,8 +27,9 @@ except (ValueError, TypeError):
 # --- Telethon ক্লায়েন্ট ইনিশিয়ালাইজেশন ---
 client = TelegramClient('bot_session', API_ID, API_HASH)
 
-# --- ইউজারদের অবস্থা (state) ট্র্যাক করার জন্য একটি ডিকশনারি ---
+# --- ইউজারদের অবস্থা এবং মূল ইভেন্ট লুপ ট্র্যাক করা ---
 user_data = {}
+main_loop = None # এটি পরে সেট করা হবে
 
 # --- Helper Functions ---
 def cleanup_files(*paths):
@@ -49,14 +51,7 @@ async def start_handler(event):
 @client.on(events.NewMessage(pattern='/help'))
 async def help_handler(event):
     await event.respond(
-        "**ℹ️ কিভাবে ব্যবহার করবেন:**\n\n"
-        "1. আমাকে যেকোনো URL পাঠান।\n"
-        "2. 'ভিডিও' বা 'ফাইল' ফরম্যাট বেছে নিন।\n"
-        "3. (ঐচ্ছিক) ভিডিওর জন্য একটি কাস্টম থাম্বনেইল হিসেবে ছবি পাঠান। না চাইলে মেসেজ দিয়ে `/skip` লিখুন।\n\n"
-        "**⚠️ সীমাবদ্ধতা:**\n"
-        "- সর্বোচ্চ ফাইলের আকার: **2 GB**\n"
-        "- বড় ফাইল ডাউনলোড এবং আপলোড করতে সার্ভারের ক্ষমতার উপর নির্ভর করে কিছুটা সময় লাগতে পারে।\n\n"
-        "যেকোনো পর্যায়ে প্রক্রিয়া বাতিল করতে `/cancel` কমান্ড দিন।"
+        "**ℹ️ কিভাবে ব্যবহার করবেন:**\n\n1. আমাকে যেকোনো URL পাঠান।\n2. 'ভিডিও' বা 'ফাইল' ফরম্যাট বেছে নিন।\n3. (ঐচ্ছিক) ভিডিওর জন্য একটি কাস্টম থাম্বনেইল হিসেবে ছবি পাঠান। না চাইলে মেসেজ দিয়ে `/skip` লিখুন।\n\n**⚠️ সীমাবদ্ধতা:**\n- সর্বোচ্চ ফাইলের আকার: **2 GB**\n- বড় ফাইল ডাউনলোড এবং আপলোড করতে সার্ভারের ক্ষমতার উপর নির্ভর করে কিছুটা সময় লাগতে পারে।\n\nযেকোনো পর্যায়ে প্রক্রিয়া বাতিল করতে `/cancel` কমান্ড দিন।"
     )
 
 @client.on(events.NewMessage(pattern='/cancel'))
@@ -89,18 +84,25 @@ async def url_handler(event):
 async def callback_handler(event):
     user_id = event.sender_id
     if user_id not in user_data or user_data[user_id]['state'] != 'waiting_for_format':
-        await event.answer("এই বাটনটি আপনার জন্য নয় অথবা এর মেয়াদ শেষ।", alert=True)
+        try:
+            await event.answer("এই বাটনটি আপনার জন্য নয় অথবা এর মেয়াদ শেষ।", alert=True)
+        except MessageNotModifiedError:
+            pass
         return
 
     choice = event.data.decode('utf-8')
     user_data[user_id]['format'] = choice
     
-    if choice == 'video':
-        user_data[user_id]['state'] = 'waiting_for_thumbnail'
-        await event.edit("চমৎকার! এখন ভিডিওর জন্য একটি কাস্টম থাম্বনেইল পাঠান। না চাইলে `/skip` টাইপ করে পাঠান।")
-    else:
-        await event.edit("✅ ফরম্যাট সিলেক্ট হয়েছে। ডাউনলোড শুরু হচ্ছে...")
-        await process_and_upload(event, user_id)
+    try:
+        if choice == 'video':
+            user_data[user_id]['state'] = 'waiting_for_thumbnail'
+            await event.edit("চমৎকার! এখন ভিডিওর জন্য একটি কাস্টম থাম্বনেইল পাঠান। না চাইলে `/skip` টাইপ করে পাঠান।")
+        else:
+            await event.edit("✅ ফরম্যাট সিলেক্ট হয়েছে। ডাউনলোড শুরু হচ্ছে...")
+            await process_and_upload(event, user_id)
+    except MessageNotModifiedError:
+        logger.warning("Message not modified, likely due to double-click. Ignoring.")
+        pass
 
 @client.on(events.NewMessage)
 async def message_handler(event):
@@ -121,7 +123,7 @@ async def message_handler(event):
         else:
             await event.respond("অনুগ্রহ করে একটি ছবি পাঠান অথবা `/skip` টাইপ করুন।")
 
-# --- Download and Upload Function with Progress Bar ---
+# --- Download and Upload Function ---
 async def process_and_upload(event, user_id):
     user_info = user_data.get(user_id, {})
     url = user_info.get('url')
@@ -142,17 +144,17 @@ async def process_and_upload(event, user_id):
         return "█" * filled_blocks + "░" * empty_blocks
 
     def download_progress_hook(d):
-        nonlocal last_update_time, progress_msg
+        nonlocal last_update_time
         if d['status'] == 'downloading':
             current_time = time.time()
             if current_time - last_update_time > 2:
-                percentage_str = d.get('_percent_str', '0%')
+                percentage_str = d.get('_percent_str', '0%').strip()
                 try:
                     percentage = float(percentage_str.strip('%'))
                 except ValueError:
                     percentage = 0
                 
-                speed = d.get('_speed_str', 'N/A')
+                speed = d.get('_speed_str', 'N/A').strip()
                 total_size = d.get('total_bytes_estimate') or d.get('total_bytes', 0)
                 total_size_str = f"{total_size / 1048576:.2f} MB" if total_size > 0 else "Unknown"
 
@@ -164,7 +166,8 @@ async def process_and_upload(event, user_id):
                     f"**গতি:** `{speed}` | **ফাইলের আকার:** `{total_size_str}`"
                 )
                 
-                asyncio.create_task(progress_msg.edit(text))
+                if main_loop:
+                    asyncio.run_coroutine_threadsafe(progress_msg.edit(text), main_loop)
                 last_update_time = current_time
 
         elif d['status'] == 'finished':
@@ -172,7 +175,7 @@ async def process_and_upload(event, user_id):
             downloaded_file_path = d.get('filename') or d.get('info_dict', {}).get('_filename')
 
     async def upload_progress_callback(current, total):
-        nonlocal last_update_time, progress_msg
+        nonlocal last_update_time
         current_time = time.time()
         if current_time - last_update_time > 2:
             percentage = round((current / total) * 100)
@@ -200,8 +203,8 @@ async def process_and_upload(event, user_id):
     }
 
     try:
-        loop = asyncio.get_event_loop()
-        await loop.run_in_executor(None, lambda: yt_dlp.YoutubeDL(ydl_opts).extract_info(url, download=True))
+        if main_loop:
+            await main_loop.run_in_executor(None, lambda: yt_dlp.YoutubeDL(ydl_opts).extract_info(url, download=True))
         
         if not downloaded_file_path or not os.path.exists(downloaded_file_path):
             raise ValueError("ফাইল ডাউনলোড করা যায়নি। লিঙ্কটি সম্ভবত ব্যক্তিগত (private) অথবা সুরক্ষিত।")
@@ -226,7 +229,10 @@ async def process_and_upload(event, user_id):
 
     except Exception as e:
         logger.error(f"Error processing for user {user_id}: {e}")
-        await progress_msg.edit(f"❌ একটি মারাত্মক সমস্যা হয়েছে।\n\n**ত্রুটি:** `{str(e)[:500]}`")
+        try:
+            await progress_msg.edit(f"❌ একটি মারাত্মক সমস্যা হয়েছে।\n\n**ত্রুটি:** `{str(e)[:500]}`")
+        except Exception as edit_error:
+            logger.error(f"Could not edit progress message: {edit_error}")
     finally:
         cleanup_files(downloaded_file_path, thumbnail_path)
         if user_id in user_data:
@@ -243,7 +249,10 @@ def run_flask():
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
 
-async def main():
+async def main_async_runner():
+    global main_loop
+    main_loop = asyncio.get_running_loop()
+
     os.makedirs("downloads", exist_ok=True)
     
     flask_thread = threading.Thread(target=run_flask)
@@ -258,4 +267,4 @@ if __name__ == '__main__':
     if not all([API_ID, API_HASH, BOT_TOKEN]):
         logger.critical("One or more environment variables (API_ID, API_HASH, BOT_TOKEN) are missing.")
     else:
-        asyncio.run(main())
+        asyncio.run(main_async_runner())
