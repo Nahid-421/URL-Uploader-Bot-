@@ -1,0 +1,4 @@
+Telethon
+yt-dlp
+ffmpeg-python
+Flask
