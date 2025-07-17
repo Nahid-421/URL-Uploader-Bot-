@@ -29,7 +29,7 @@ client = TelegramClient('bot_session', API_ID, API_HASH)
 
 # --- ইউজারদের অবস্থা এবং মূল ইভেন্ট লুপ ট্র্যাক করা ---
 user_data = {}
-main_loop = None # এটি পরে সেট করা হবে
+main_loop = None
 
 # --- Helper Functions ---
 def cleanup_files(*paths):
@@ -157,19 +157,15 @@ async def process_and_upload(event, user_id):
                 speed = d.get('_speed_str', 'N/A').strip()
                 total_size = d.get('total_bytes_estimate') or d.get('total_bytes', 0)
                 total_size_str = f"{total_size / 1048576:.2f} MB" if total_size > 0 else "Unknown"
-
                 progress_bar = make_progress_bar(percentage)
-                
                 text = (
                     f"📥 **ডাউনলোড হচ্ছে...**\n"
                     f"`[{progress_bar}] {percentage_str}`\n"
                     f"**গতি:** `{speed}` | **ফাইলের আকার:** `{total_size_str}`"
                 )
-                
                 if main_loop:
                     asyncio.run_coroutine_threadsafe(progress_msg.edit(text), main_loop)
                 last_update_time = current_time
-
         elif d['status'] == 'finished':
             nonlocal downloaded_file_path
             downloaded_file_path = d.get('filename') or d.get('info_dict', {}).get('_filename')
@@ -180,7 +176,6 @@ async def process_and_upload(event, user_id):
         if current_time - last_update_time > 2:
             percentage = round((current / total) * 100)
             progress_bar = make_progress_bar(percentage)
-            
             text = (
                 f"🚀 **আপলোড হচ্ছে...**\n"
                 f"`[{progress_bar}] {percentage}%`"
@@ -191,29 +186,34 @@ async def process_and_upload(event, user_id):
     output_template = f"downloads/{uuid.uuid4()}/%(title)s.%(ext)s"
     ydl_opts = {
         'outtmpl': output_template,
-        'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best',
-        'merge_output_format': 'mp4',
         'noplaylist': True,
         'nocheckcertificate': True,
         'progress_hooks': [download_progress_hook],
-        'postprocessor_args': [
-            '-c:v', 'libx264', '-c:a', 'aac', '-map', '0:v:0?', '-map', '0:a:0?'
-        ] if file_format == 'video' else [],
-        'postprocessors': [{'key': 'FFmpegVideoConvertor', 'preferedformat': 'mp4'}] if file_format == 'video' else [],
+        'format': 'bestvideo[ext=mp4][vcodec^=avc]+bestaudio[ext=m4a]/best[ext=mp4]/best'
     }
+
+    if file_format == 'video':
+        ydl_opts['postprocessors'] = [{'key': 'FFmpegVideoConvertor', 'preferedformat': 'mp4'}]
 
     try:
         if main_loop:
             await main_loop.run_in_executor(None, lambda: yt_dlp.YoutubeDL(ydl_opts).extract_info(url, download=True))
         
         if not downloaded_file_path or not os.path.exists(downloaded_file_path):
-            raise ValueError("ফাইল ডাউনলোড করা যায়নি। লিঙ্কটি সম্ভবত ব্যক্তিগত (private) অথবা সুরক্ষিত।")
-            
+            logger.warning("Initial download attempt failed. Retrying with a more generic format.")
+            ydl_opts['format'] = 'bestvideo+bestaudio/best'
+            if main_loop:
+                await main_loop.run_in_executor(None, lambda: yt_dlp.YoutubeDL(ydl_opts).extract_info(url, download=True))
+
+        if not downloaded_file_path or not os.path.exists(downloaded_file_path):
+            raise ValueError("ফাইল ডাউনলোড করা যায়নি। অনেক চেষ্টার পরেও লিঙ্কটি থেকে কোনো মিডিয়া পাওয়া যায়নি।")
+
         await progress_msg.edit("ডাউনলোড সম্পন্ন! এখন আপলোড করা হচ্ছে...")
         last_update_time = 0
 
         file_attributes = []
-        if file_format == 'video':
+        is_video_file = downloaded_file_path.endswith(('.mp4', '.mkv', '.webm'))
+        if file_format == 'video' and is_video_file:
             file_attributes.append(DocumentAttributeVideo(duration=0, w=0, h=0, supports_streaming=True))
         
         await client.send_file(
@@ -221,7 +221,7 @@ async def process_and_upload(event, user_id):
             file=downloaded_file_path,
             thumb=thumbnail_path,
             attributes=file_attributes,
-            force_document=(file_format == 'document'),
+            force_document=(file_format == 'document' or not is_video_file),
             caption=os.path.basename(downloaded_file_path).rsplit('.', 1)[0],
             progress_callback=upload_progress_callback
         )
