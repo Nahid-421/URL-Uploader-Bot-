@@ -4,8 +4,10 @@ services:
     env: docker
     healthCheckPath: /
     
+    # শক্তিশালী সার্ভার প্ল্যান সুপারিশ করা হচ্ছে
+    # plan: standard # উদাহরণ: Standard প্ল্যান
+    
     # বড় ফাইল এবং স্প্লিটিংয়ের জন্য ডিস্ক স্পেস প্রয়োজন
-    # সেরা পারফরম্যান্সের জন্য পেইড প্ল্যান সুপারিশ করা হচ্ছে
     disk:
       name: downloads-storage
       mountPath: /app/downloads
@@ -18,6 +20,8 @@ services:
       - key: API_HASH
         sync: false
       - key: BOT_TOKEN
+        sync: false
+      - key: LOG_CHANNEL # আপনার লগ চ্যানেলের আইডি দিন
         sync: false
     
     # কুকি ফাইলের জন্য (সবচেয়ে নিরাপদ পদ্ধতি)
