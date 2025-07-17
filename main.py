@@ -170,10 +170,16 @@ async def process_and_upload(event, user_id):
                                caption=final_caption, file_name=final_filename, progress_callback=upload_progress_callback)
         await progress_msg.delete()
     except Exception as e:
-        logger.error(f"Error for user {user_id}: {e}")
-        try:
-            await progress_msg.edit(f"❌ একটি মারাত্মক সমস্যা হয়েছে।\n**ত্রুটি:** `{str(e)[:500]}`")
-        except Exception as edit_error: logger.error(f"Could not edit message: {edit_error}")
+        # MessageNotModifiedError কে আলাদাভাবে হ্যান্ডেল করা হচ্ছে
+        if isinstance(e, MessageNotModifiedError):
+            logger.warning(f"Message not modified for user {user_id}. Ignoring. Details: {e}")
+        else:
+            # অন্যান্য সব এররের জন্য লগ এবং ব্যবহারকারীকে বার্তা পাঠানো
+            logger.error(f"Error for user {user_id}: {e}")
+            try:
+                await progress_msg.edit(f"❌ একটি মারাত্মক সমস্যা হয়েছে।\n**ত্রুটি:** `{str(e)[:500]}`")
+            except Exception as edit_error: 
+                logger.error(f"Could not edit message: {edit_error}")
     finally:
         cleanup_files(downloaded_file_path, thumbnail_path)
         if user_id in user_data: del user_data[user_id]
